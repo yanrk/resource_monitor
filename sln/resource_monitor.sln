@@ -1,0 +1,43 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio 15
+VisualStudioVersion = 15.0.28307.271
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "resource_monitor", "resource_monitor.vcxproj", "{05FA9B10-CDC6-486F-8C99-3769263FA959}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		dll_debug|x64 = dll_debug|x64
+		dll_debug|x86 = dll_debug|x86
+		dll_release|x64 = dll_release|x64
+		dll_release|x86 = dll_release|x86
+		lib_debug|x64 = lib_debug|x64
+		lib_debug|x86 = lib_debug|x86
+		lib_release|x64 = lib_release|x64
+		lib_release|x86 = lib_release|x86
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{05FA9B10-CDC6-486F-8C99-3769263FA959}.dll_debug|x64.ActiveCfg = dll_debug|x64
+		{05FA9B10-CDC6-486F-8C99-3769263FA959}.dll_debug|x64.Build.0 = dll_debug|x64
+		{05FA9B10-CDC6-486F-8C99-3769263FA959}.dll_debug|x86.ActiveCfg = dll_debug|Win32
+		{05FA9B10-CDC6-486F-8C99-3769263FA959}.dll_debug|x86.Build.0 = dll_debug|Win32
+		{05FA9B10-CDC6-486F-8C99-3769263FA959}.dll_release|x64.ActiveCfg = dll_release|x64
+		{05FA9B10-CDC6-486F-8C99-3769263FA959}.dll_release|x64.Build.0 = dll_release|x64
+		{05FA9B10-CDC6-486F-8C99-3769263FA959}.dll_release|x86.ActiveCfg = dll_release|Win32
+		{05FA9B10-CDC6-486F-8C99-3769263FA959}.dll_release|x86.Build.0 = dll_release|Win32
+		{05FA9B10-CDC6-486F-8C99-3769263FA959}.lib_debug|x64.ActiveCfg = lib_debug|x64
+		{05FA9B10-CDC6-486F-8C99-3769263FA959}.lib_debug|x64.Build.0 = lib_debug|x64
+		{05FA9B10-CDC6-486F-8C99-3769263FA959}.lib_debug|x86.ActiveCfg = lib_debug|Win32
+		{05FA9B10-CDC6-486F-8C99-3769263FA959}.lib_debug|x86.Build.0 = lib_debug|Win32
+		{05FA9B10-CDC6-486F-8C99-3769263FA959}.lib_release|x64.ActiveCfg = lib_release|x64
+		{05FA9B10-CDC6-486F-8C99-3769263FA959}.lib_release|x64.Build.0 = lib_release|x64
+		{05FA9B10-CDC6-486F-8C99-3769263FA959}.lib_release|x86.ActiveCfg = lib_release|Win32
+		{05FA9B10-CDC6-486F-8C99-3769263FA959}.lib_release|x86.Build.0 = lib_release|Win32
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {43347E2C-1C4B-41F8-9D1C-FA0930E64563}
+	EndGlobalSection
+EndGlobal
