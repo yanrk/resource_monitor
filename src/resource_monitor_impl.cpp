@@ -24,6 +24,8 @@
 #include "filesystem/hardware.h"
 #include "charset/charset.h"
 #include "string/string.h"
+#include "pipe/pipe.h"
+#include "time/time.h"
 #include "log/log.h"
 
 ProcessLeaf::ProcessLeaf()
@@ -482,8 +484,111 @@ static bool get_processor_utilization_percentage(PDH_HCOUNTER counter_handle, st
     return (true);
 }
 
+static bool get_nvidia_gpu_enc(double & gpu_percent_total, double & gpu_percent_using)
+{
+    gpu_percent_total = 0.0;
+    gpu_percent_using = 0.0;
+
+    static bool s_check_tool_not_exist = false;
+
+    if (s_check_tool_not_exist)
+    {
+        return (false);
+    }
+
+    FILE * file = goofer_popen("nvidia-smi dmon -s u -c 1", "r");
+    if (nullptr == file)
+    {
+        s_check_tool_not_exist = true;
+        return (false);
+    }
+
+    do
+    {
+        char line[128] = { 0x0 };
+        if (nullptr == fgets(line, sizeof(line) - 1, file))
+        {
+            break;
+        }
+
+        std::vector<std::string> titles;
+        Goofer::goofer_split_piece(line, " \t", true, true, titles);
+        std::vector<std::string>::iterator iter = std::find(titles.begin(), titles.end(), "enc");
+        if (titles.end() == iter)
+        {
+            break;
+        }
+
+        uint32_t index = static_cast<uint32_t>(iter - titles.begin());
+        if ("#" == titles.front())
+        {
+            index -= 1;
+        }
+
+        if (nullptr == fgets(line, sizeof(line) - 1, file))
+        {
+            break;
+        }
+
+        std::vector<std::string> units;
+        Goofer::goofer_split_piece(line, " \t", true, true, units);
+
+        if (titles.size() != units.size())
+        {
+            break;
+        }
+
+        while (nullptr != fgets(line, sizeof(line) - 1, file))
+        {
+            std::vector<std::string> values;
+            Goofer::goofer_split_piece(line, " \t", true, true, values);
+            if (values.size() > index)
+            {
+                gpu_percent_total += 100.0;
+                gpu_percent_using += std::stoi(values[index], nullptr);
+            }
+        }
+    } while (false);
+
+    goofer_pclose(file);
+
+    return (true);
+}
+
 static bool get_process_gpu_utilization_percentage(PDH_HCOUNTER counter_handle, std::vector<char> & buffer, SystemSnapshot & system_snapshot)
 {
+    if (nullptr == counter_handle)
+    {
+        static uint64_t s_last_check_time = 0;
+
+        uint64_t current_time = Goofer::goofer_time();
+        if (current_time >= s_last_check_time && current_time < s_last_check_time + 5)
+        {
+            return (true);
+        }
+
+        s_last_check_time = current_time;
+
+        double gpu_percent_total = 0.0;
+        double gpu_percent_using = 0.0;
+        if (!get_nvidia_gpu_enc(gpu_percent_total, gpu_percent_using))
+        {
+            return (false);
+        }
+
+        SystemResource & system_resource = system_snapshot.system_resource;
+        if (gpu_percent_total > -0.1 && gpu_percent_total < 0.1)
+        {
+            system_resource.gpu_enc_usage = 100.0;
+        }
+        else
+        {
+            system_resource.gpu_enc_usage = 100.0 * gpu_percent_using / gpu_percent_total;
+        }
+
+        return (true);
+    }
+
     PDH_FMT_COUNTERVALUE_ITEM * item_array = nullptr;
     ULONG item_count = 0;
     if (!get_formatted_counter_array(counter_handle, PDH_FMT_DOUBLE | PDH_FMT_NOCAP100, buffer, item_array, item_count))
@@ -598,8 +703,77 @@ static bool get_process_gpu_utilization_percentage(PDH_HCOUNTER counter_handle, 
     return (true);
 }
 
+static bool get_nvidia_gpu_mem(uint64_t & video_memory_size_total, uint64_t & video_memory_size_avail)
+{
+    video_memory_size_total = 0;
+    video_memory_size_avail = 0;
+
+    static bool s_check_tool_not_exist = false;
+
+    if (s_check_tool_not_exist)
+    {
+        return (false);
+    }
+
+    FILE * file = goofer_popen("nvidia-smi --format=csv,noheader --query-gpu=memory.total,memory.free", "r");
+    if (nullptr == file)
+    {
+        s_check_tool_not_exist = true;
+        return (false);
+    }
+
+    uint64_t memory_size_total = 0;
+    uint64_t memory_size_avail = 0;
+    char memory_size_total_unit[16] = { 0x0 };
+    char memory_size_avail_unit[16] = { 0x0 };
+
+    while (4 == fscanf(file, "%I64u %s %I64u %s", &memory_size_total, memory_size_total_unit, &memory_size_avail, memory_size_avail_unit))
+    {
+        if ('G' == memory_size_total_unit[0])
+        {
+            memory_size_total *= 1024;
+        }
+        if ('G' == memory_size_avail_unit[0])
+        {
+            memory_size_avail *= 1024;
+        }
+        video_memory_size_total += memory_size_total * 1024 * 1024;
+        video_memory_size_avail += memory_size_avail * 1024 * 1024;
+    }
+
+    goofer_pclose(file);
+
+    return (true);
+}
+
 static bool get_process_gpu_dedicated_memory_usage(PDH_HCOUNTER counter_handle, std::vector<char> & buffer, SystemSnapshot & system_snapshot)
 {
+    if (nullptr == counter_handle)
+    {
+        static uint64_t s_last_check_time = 0;
+
+        uint64_t current_time = Goofer::goofer_time();
+        if (current_time >= s_last_check_time && current_time < s_last_check_time + 5)
+        {
+            return (true);
+        }
+
+        s_last_check_time = current_time;
+
+        uint64_t video_memory_size_total = 0;
+        uint64_t video_memory_size_avail = 0;
+        if (!get_nvidia_gpu_mem(video_memory_size_total, video_memory_size_avail))
+        {
+            return (false);
+        }
+
+        SystemResource & system_resource = system_snapshot.system_resource;
+        system_resource.gpu_mem_total = video_memory_size_total;
+        system_resource.gpu_mem_usage = video_memory_size_total - video_memory_size_avail;
+
+        return (true);
+    }
+
     PDH_FMT_COUNTERVALUE_ITEM * item_array = nullptr;
     ULONG item_count = 0;
     if (!get_formatted_counter_array(counter_handle, PDH_FMT_LARGE, buffer, item_array, item_count))
@@ -651,6 +825,7 @@ static bool get_system_gpu_dedicated_memory_total(SystemSnapshot & system_snapsh
     graphics_card_list.clear();
 
     SystemResource & system_resource = system_snapshot.system_resource;
+    system_resource.gpu_count = 0;
     system_resource.gpu_mem_total = 0;
 
     ATL::CComPtr<IDXGIFactory1> dxgi_factory;
@@ -681,6 +856,7 @@ static bool get_system_gpu_dedicated_memory_total(SystemSnapshot & system_snapsh
         }
 
         graphics_card_list.emplace_back(Goofer::unicode_to_utf8(adapter_desc.Description));
+        system_resource.gpu_count += 1;
         system_resource.gpu_mem_total += static_cast<uint64_t>(adapter_desc.DedicatedVideoMemory);
     }
 
@@ -755,14 +931,12 @@ bool ResourceMonitorImpl::init()
 
         if (ERROR_SUCCESS != PdhAddCounter(m_query_handle, "\\GPU Engine(*)\\Utilization Percentage", 0, &m_gpu_engine_counter))
         {
-            RUN_LOG_ERR("resource monitor init failure while add gpu engine utilization percentage counter failed");
-            break;
+            RUN_LOG_WAR("resource monitor init warning while add gpu engine utilization percentage counter failed");
         }
 
         if (ERROR_SUCCESS != PdhAddCounter(m_query_handle, "\\GPU Process Memory(*)\\Dedicated Usage", 0, &m_gpu_memory_counter))
         {
-            RUN_LOG_ERR("resource monitor init failure while add gpu process memory dedicated usage counter failed");
-            break;
+            RUN_LOG_WAR("resource monitor init warning while add gpu process memory dedicated usage counter failed");
         }
 
         if (ERROR_SUCCESS != PdhCollectQueryDataEx(m_query_handle, 5, m_query_event))

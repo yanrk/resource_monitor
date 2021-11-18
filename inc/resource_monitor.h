@@ -51,6 +51,7 @@ struct RESOURCE_MONITOR_API SystemResource
     double          cpu_usage;
     uint64_t        ram_usage;
     uint64_t        ram_total;
+    uint64_t        gpu_count;
     double          gpu_3d_usage;
     double          gpu_vr_usage;
     double          gpu_enc_usage;
