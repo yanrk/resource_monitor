@@ -76,7 +76,7 @@ bool ResourceMonitor::get_system_resource(SystemResource & system_resource)
     return (nullptr != m_resource_monitor_impl && m_resource_monitor_impl->get_system_resource(system_resource));
 }
 
-bool ResourceMonitor::get_graphics_cards(std::list<std::string> & graphics_card_list)
+bool ResourceMonitor::get_graphics_cards(std::list<std::string> & graphics_card_names)
 {
-    return (nullptr != m_resource_monitor_impl && m_resource_monitor_impl->get_graphics_cards(graphics_card_list));
+    return (nullptr != m_resource_monitor_impl && m_resource_monitor_impl->get_graphics_cards(graphics_card_names));
 }

@@ -19,6 +19,7 @@
 #include <map>
 #include <vector>
 #include <string>
+#include <numeric>
 #include <codecvt>
 #include "resource_monitor_impl.h"
 #include "filesystem/hardware.h"
@@ -466,6 +467,32 @@ static bool get_formatted_counter_array(PDH_HCOUNTER counter_handle, DWORD value
 
 static bool get_processor_utilization_percentage(PDH_HCOUNTER counter_handle, std::vector<char> & buffer, SystemSnapshot & system_snapshot)
 {
+    SystemResource & system_resource = system_snapshot.system_resource;
+    system_resource.cpu_usage = 0;
+
+    if (nullptr == counter_handle)
+    {
+        if (0 == system_resource.cpu_count)
+        {
+            return (false);
+        }
+
+        std::vector<size_t> cpu_usage;
+        if (!Goofer::get_system_cpu_usage(cpu_usage))
+        {
+            return (false);
+        }
+
+        if (cpu_usage.empty())
+        {
+            return (false);
+        }
+
+        system_resource.cpu_usage = 1.0 * std::accumulate(cpu_usage.begin(), cpu_usage.end(), static_cast<size_t>(0)) / system_resource.cpu_count;
+
+        return (true);
+    }
+
     PDH_FMT_COUNTERVALUE_ITEM * item_array = nullptr;
     ULONG item_count = 0;
     if (!get_formatted_counter_array(counter_handle, PDH_FMT_DOUBLE | PDH_FMT_NOCAP100, buffer, item_array, item_count))
@@ -473,8 +500,6 @@ static bool get_processor_utilization_percentage(PDH_HCOUNTER counter_handle, st
         return (false);
     }
 
-    SystemResource & system_resource = system_snapshot.system_resource;
-    system_resource.cpu_usage = 0;
     for (ULONG item_index = 0; item_index < item_count; ++item_index)
     {
         PDH_FMT_COUNTERVALUE_ITEM & item = item_array[item_index];
@@ -819,48 +844,101 @@ static bool get_process_gpu_dedicated_memory_usage(PDH_HCOUNTER counter_handle, 
     return (true);
 }
 
-static bool get_system_gpu_dedicated_memory_total(SystemSnapshot & system_snapshot)
+static bool get_nvidia_card_names(uint64_t & graphics_card_count, std::list<std::string> & graphics_card_names)
 {
-    std::list<std::string> & graphics_card_list = system_snapshot.graphics_card_list;
-    graphics_card_list.clear();
+    graphics_card_count = 0;
+    graphics_card_names.clear();
+
+    FILE * file = goofer_popen("nvidia-smi --format=csv,noheader --query-gpu=name", "r");
+    if (nullptr == file)
+    {
+        return (false);
+    }
+
+    char buffer[128] = { 0x0 };
+    while (nullptr != fgets(buffer, sizeof(buffer) - 1, file))
+    {
+        std::string graphics_card_name(buffer);
+        Goofer::goofer_string_trim(graphics_card_name);
+        if (!graphics_card_name.empty())
+        {
+            graphics_card_count += 1;
+            graphics_card_names.push_back(graphics_card_name);
+        }
+    }
+
+    goofer_pclose(file);
+
+    return (0 != graphics_card_count);
+}
+
+static bool get_system_gpu_dedicated_memory_total(SystemSnapshot & system_snapshot, bool & query_with_pdh)
+{
+    std::list<std::string> & graphics_card_names = system_snapshot.graphics_card_names;
+    graphics_card_names.clear();
 
     SystemResource & system_resource = system_snapshot.system_resource;
     system_resource.gpu_count = 0;
     system_resource.gpu_mem_total = 0;
 
-    ATL::CComPtr<IDXGIFactory1> dxgi_factory;
-    if (CreateDXGIFactory1(IsWindowsVistaSP2OrGreater() ? __uuidof(IDXGIFactory2) : __uuidof(IDXGIFactory1), reinterpret_cast<void **>(&dxgi_factory)) < 0)
+    do
     {
-        return (false);
-    }
+        ATL::CComPtr<IDXGIFactory1> dxgi_factory;
+        if (S_OK == CreateDXGIFactory1(IsWindowsVistaSP2OrGreater() ? __uuidof(IDXGIFactory2) : __uuidof(IDXGIFactory1), reinterpret_cast<void **>(&dxgi_factory)))
+        {
+            UINT adapter_index = 0;
+            while (true)
+            {
+                ATL::CComPtr<IDXGIAdapter1> dxgi_adapter;
+                if (DXGI_ERROR_NOT_FOUND == dxgi_factory->EnumAdapters1(adapter_index++, &dxgi_adapter))
+                {
+                    break;
+                }
 
-    UINT adapter_index = 0;
-    while (true)
-    {
-        ATL::CComPtr<IDXGIAdapter1> dxgi_adapter;
-        if (DXGI_ERROR_NOT_FOUND == dxgi_factory->EnumAdapters1(adapter_index++, &dxgi_adapter))
+                DXGI_ADAPTER_DESC adapter_desc = { 0x0 };
+                HRESULT result = dxgi_adapter->GetDesc(&adapter_desc);
+                if (result < 0)
+                {
+                    continue;
+                }
+
+                if (0x1414 == adapter_desc.VendorId)
+                {
+                    continue;
+                }
+
+                graphics_card_names.emplace_back(Goofer::unicode_to_utf8(adapter_desc.Description));
+                system_resource.gpu_count += 1;
+                system_resource.gpu_mem_total += static_cast<uint64_t>(adapter_desc.DedicatedVideoMemory);
+            }
+
+            if (system_resource.gpu_count > 0)
+            {
+                query_with_pdh = true;
+                return (true);
+            }
+        }
+
+        if (!get_nvidia_card_names(system_resource.gpu_count, graphics_card_names))
         {
             break;
         }
 
-        DXGI_ADAPTER_DESC adapter_desc = { 0x0 };
-        HRESULT result = dxgi_adapter->GetDesc(&adapter_desc);
-        if (result < 0)
+        uint64_t video_memory_size_total = 0;
+        uint64_t video_memory_size_avail = 0;
+        if (!get_nvidia_gpu_mem(video_memory_size_total, video_memory_size_avail))
         {
-            continue;
+            break;
         }
 
-        if (0x1414 == adapter_desc.VendorId)
-        {
-            continue;
-        }
+        SystemResource & system_resource = system_snapshot.system_resource;
+        system_resource.gpu_mem_total = video_memory_size_total;
+        system_resource.gpu_mem_usage = video_memory_size_total - video_memory_size_avail;
 
-        graphics_card_list.emplace_back(Goofer::unicode_to_utf8(adapter_desc.Description));
-        system_resource.gpu_count += 1;
-        system_resource.gpu_mem_total += static_cast<uint64_t>(adapter_desc.DedicatedVideoMemory);
-    }
+        return (true);
+    } while (false);
 
-    return (true);
+    return (false);
 }
 
 ResourceMonitorImpl::ResourceMonitorImpl()
@@ -904,7 +982,8 @@ bool ResourceMonitorImpl::init()
             break;
         }
 
-        if (!get_system_gpu_dedicated_memory_total(m_system_snapshot))
+        bool query_with_pdh = false;
+        if (!get_system_gpu_dedicated_memory_total(m_system_snapshot, query_with_pdh))
         {
             RUN_LOG_ERR("resource monitor init failure while get system gpu dedicated memory total failed");
             break;
@@ -925,18 +1004,20 @@ bool ResourceMonitorImpl::init()
 
         if (ERROR_SUCCESS != PdhAddCounter(m_query_handle, "\\Processor(_Total)\\% Processor Time", 0, &m_processor_counter))
         {
-            RUN_LOG_ERR("resource monitor init failure while add processor time counter failed");
-            break;
+            RUN_LOG_WAR("resource monitor init warning while add processor time counter failed");
         }
 
-        if (ERROR_SUCCESS != PdhAddCounter(m_query_handle, "\\GPU Engine(*)\\Utilization Percentage", 0, &m_gpu_engine_counter))
+        if (query_with_pdh)
         {
-            RUN_LOG_WAR("resource monitor init warning while add gpu engine utilization percentage counter failed");
-        }
+            if (ERROR_SUCCESS != PdhAddCounter(m_query_handle, "\\GPU Engine(*)\\Utilization Percentage", 0, &m_gpu_engine_counter))
+            {
+                RUN_LOG_WAR("resource monitor init warning while add gpu engine utilization percentage counter failed");
+            }
 
-        if (ERROR_SUCCESS != PdhAddCounter(m_query_handle, "\\GPU Process Memory(*)\\Dedicated Usage", 0, &m_gpu_memory_counter))
-        {
-            RUN_LOG_WAR("resource monitor init warning while add gpu process memory dedicated usage counter failed");
+            if (ERROR_SUCCESS != PdhAddCounter(m_query_handle, "\\GPU Process Memory(*)\\Dedicated Usage", 0, &m_gpu_memory_counter))
+            {
+                RUN_LOG_WAR("resource monitor init warning while add gpu process memory dedicated usage counter failed");
+            }
         }
 
         if (ERROR_SUCCESS != PdhCollectQueryDataEx(m_query_handle, 5, m_query_event))
@@ -1126,7 +1207,7 @@ bool ResourceMonitorImpl::get_system_resource(SystemResource & system_resource)
     return (true);
 }
 
-bool ResourceMonitorImpl::get_graphics_cards(std::list<std::string> & graphics_card_list)
+bool ResourceMonitorImpl::get_graphics_cards(std::list<std::string> & graphics_card_names)
 {
     if (!m_running)
     {
@@ -1135,7 +1216,7 @@ bool ResourceMonitorImpl::get_graphics_cards(std::list<std::string> & graphics_c
 
     std::lock_guard<std::mutex> locker(m_system_snapshot_mutex);
 
-    graphics_card_list = m_system_snapshot.graphics_card_list;
+    graphics_card_names = m_system_snapshot.graphics_card_names;
 
     return (true);
 }

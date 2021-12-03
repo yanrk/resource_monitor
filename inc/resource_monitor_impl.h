@@ -54,7 +54,7 @@ struct ProcessSnapshot
 struct SystemSnapshot
 {
     SystemResource                          system_resource;
-    std::list<std::string>                  graphics_card_list;
+    std::list<std::string>                  graphics_card_names;
     std::map<uint32_t, ProcessLeaf>         process_leaf_map;     /* key: every monitoring process, value: sub processes which is a monitoring process too  */
     std::map<uint32_t, ProcessTree>         process_tree_map;     /* key: every monitoring process, value: process and sub processes which is not a monitoring process */
     std::map<uint32_t, ProcessHelper>       process_helper_map;   /* key: every monitoring process and their sub processes if need monitor a process tree */
@@ -80,7 +80,7 @@ public:
 public:
     bool get_process_resource(uint32_t process_id, ProcessResource & process_resource);
     bool get_system_resource(SystemResource & system_resource);
-    bool get_graphics_cards(std::list<std::string> & graphics_card_list);
+    bool get_graphics_cards(std::list<std::string> & graphics_card_names);
 
 private:
     void query_resource_thread();

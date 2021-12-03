@@ -79,7 +79,7 @@ public:
 public:
     bool get_process_resource(uint32_t process_id, ProcessResource & process_resource);
     bool get_system_resource(SystemResource & system_resource);
-    bool get_graphics_cards(std::list<std::string> & graphics_card_list);
+    bool get_graphics_cards(std::list<std::string> & graphics_card_names);
 
 private:
     ResourceMonitor(const ResourceMonitor &) = delete;
