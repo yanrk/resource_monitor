@@ -582,6 +582,11 @@ static bool get_nvidia_gpu_enc(double & gpu_percent_total, double & gpu_percent_
 
 static bool get_process_gpu_utilization_percentage(PDH_HCOUNTER counter_handle, std::vector<char> & buffer, SystemSnapshot & system_snapshot)
 {
+    if (0 == system_snapshot.system_resource.gpu_count)
+    {
+        return (false);
+    }
+
     if (nullptr == counter_handle)
     {
         static uint64_t s_last_check_time = 0;
@@ -773,6 +778,11 @@ static bool get_nvidia_gpu_mem(uint64_t & video_memory_size_total, uint64_t & vi
 
 static bool get_process_gpu_dedicated_memory_usage(PDH_HCOUNTER counter_handle, std::vector<char> & buffer, SystemSnapshot & system_snapshot)
 {
+    if (0 == system_snapshot.system_resource.gpu_count)
+    {
+        return (false);
+    }
+
     if (nullptr == counter_handle)
     {
         static uint64_t s_last_check_time = 0;
@@ -985,8 +995,7 @@ bool ResourceMonitorImpl::init()
         bool query_with_pdh = false;
         if (!get_system_gpu_dedicated_memory_total(m_system_snapshot, query_with_pdh))
         {
-            RUN_LOG_ERR("resource monitor init failure while get system gpu dedicated memory total failed");
-            break;
+            RUN_LOG_WAR("resource monitor init warning while get system gpu dedicated memory total failed");
         }
 
         m_query_event = CreateEvent(nullptr, FALSE, FALSE, nullptr);
@@ -1007,7 +1016,7 @@ bool ResourceMonitorImpl::init()
             RUN_LOG_WAR("resource monitor init warning while add processor time counter failed");
         }
 
-        if (query_with_pdh)
+        if (query_with_pdh && m_system_snapshot.system_resource.gpu_count > 0)
         {
             if (ERROR_SUCCESS != PdhAddCounter(m_query_handle, "\\GPU Engine(*)\\Utilization Percentage", 0, &m_gpu_engine_counter))
             {
