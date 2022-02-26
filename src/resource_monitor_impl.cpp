@@ -846,9 +846,18 @@ static bool get_process_gpu_dedicated_memory_usage(PDH_HCOUNTER counter_handle, 
             {
                 ProcessResource & process_resource = iter_snapshot->second.process_resource;
                 process_resource.gpu_mem_usage += gpu_mem_usage;
+                if (process_resource.gpu_mem_usage > system_resource.gpu_mem_total)
+                {
+                    process_resource.gpu_mem_usage = system_resource.gpu_mem_total;
+                }
             }
         }
         system_resource.gpu_mem_usage += gpu_mem_usage;
+    }
+
+    if (system_resource.gpu_mem_usage > system_resource.gpu_mem_total)
+    {
+        system_resource.gpu_mem_usage = system_resource.gpu_mem_total;
     }
 
     return (true);
