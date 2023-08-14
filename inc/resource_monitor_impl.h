@@ -83,16 +83,24 @@ public:
     bool get_graphics_cards(std::list<std::string> & graphics_card_names);
 
 private:
+    void stuck_check_thread();
+    void nvgpu_check_thread();
     void query_resource_thread();
 
 private:
     volatile bool                                       m_running;
+    bool                                                m_query_gpu_with_pdh;
+    uint64_t                                            m_nvsmi_alive_time;
+    std::thread                                         m_stuck_check_thread;
+    std::thread                                         m_nvgpu_check_thread;
     std::thread                                         m_query_thread;
     HANDLE                                              m_query_event;
     PDH_HQUERY                                          m_query_handle;
     PDH_HCOUNTER                                        m_processor_counter;
     PDH_HCOUNTER                                        m_gpu_engine_counter;
     PDH_HCOUNTER                                        m_gpu_memory_counter;
+    PDH_HCOUNTER                                        m_net_send_counter;
+    PDH_HCOUNTER                                        m_net_recv_counter;
     SystemSnapshot                                      m_system_snapshot;
     std::mutex                                          m_system_snapshot_mutex;
 };

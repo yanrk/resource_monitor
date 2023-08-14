@@ -51,6 +51,8 @@ struct RESOURCE_MONITOR_API SystemResource
     double          cpu_usage;
     uint64_t        ram_usage;
     uint64_t        ram_total;
+    uint64_t        disk_usage;
+    uint64_t        disk_total;
     uint64_t        gpu_count;
     double          gpu_3d_usage;
     double          gpu_vr_usage;
@@ -58,6 +60,9 @@ struct RESOURCE_MONITOR_API SystemResource
     double          gpu_dec_usage;
     uint64_t        gpu_mem_usage;
     uint64_t        gpu_mem_total;
+    uint64_t        gpu_temperature;
+    uint64_t        net_send_bytes;
+    uint64_t        net_recv_bytes;
 };
 
 class ResourceMonitorImpl;

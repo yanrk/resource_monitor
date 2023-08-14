@@ -29,6 +29,52 @@
 #include "time/time.h"
 #include "log/log.h"
 
+static void kill_process(uint32_t process_id)
+{
+    if (0 == process_id)
+    {
+        return;
+    }
+
+    HANDLE process = OpenProcess(PROCESS_TERMINATE, FALSE, static_cast<DWORD>(process_id));
+    if (nullptr == process)
+    {
+        return;
+    }
+
+    TerminateProcess(process, 9);
+    CloseHandle(process);
+}
+
+static void kill_nvsmi_process()
+{
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (INVALID_HANDLE_VALUE == snapshot)
+    {
+        return;
+    }
+
+    std::list<uint32_t> process_id_list;
+
+    PROCESSENTRY32 pe = { sizeof(PROCESSENTRY32) };
+
+    for (BOOL ok = Process32First(snapshot, &pe); TRUE == ok; ok = Process32Next(snapshot, &pe))
+    {
+        if (0 == stricmp("nvidia-smi.exe", pe.szExeFile))
+        {
+            process_id_list.push_back(pe.th32ProcessID);
+        }
+    }
+
+    CloseHandle(snapshot);
+
+    for (std::list<uint32_t>::const_iterator iter = process_id_list.begin(); process_id_list.end() != iter; ++iter)
+    {
+        uint32_t process_id = *iter;
+        kill_process(process_id);
+    }
+}
+
 ProcessLeaf::ProcessLeaf()
     : process_descendant_set()
 {
@@ -468,7 +514,6 @@ static bool get_formatted_counter_array(PDH_HCOUNTER counter_handle, DWORD value
 static bool get_processor_utilization_percentage(PDH_HCOUNTER counter_handle, std::vector<char> & buffer, SystemSnapshot & system_snapshot)
 {
     SystemResource & system_resource = system_snapshot.system_resource;
-    system_resource.cpu_usage = 0;
 
     if (nullptr == counter_handle)
     {
@@ -500,6 +545,7 @@ static bool get_processor_utilization_percentage(PDH_HCOUNTER counter_handle, st
         return (false);
     }
 
+    system_resource.cpu_usage = 0;
     for (ULONG item_index = 0; item_index < item_count; ++item_index)
     {
         PDH_FMT_COUNTERVALUE_ITEM & item = item_array[item_index];
@@ -509,7 +555,7 @@ static bool get_processor_utilization_percentage(PDH_HCOUNTER counter_handle, st
     return (true);
 }
 
-static bool get_nvidia_gpu_enc(double & gpu_percent_total, double & gpu_percent_using)
+static bool get_nvidia_gpu_enc(double & gpu_percent_total, double & gpu_percent_using, uint64_t & nvsmi_alive_time)
 {
     gpu_percent_total = 0.0;
     gpu_percent_using = 0.0;
@@ -528,6 +574,8 @@ static bool get_nvidia_gpu_enc(double & gpu_percent_total, double & gpu_percent_
         return (false);
     }
 
+    nvsmi_alive_time = Goofer::goofer_monotonic_time();
+
     do
     {
         char line[128] = { 0x0 };
@@ -535,6 +583,8 @@ static bool get_nvidia_gpu_enc(double & gpu_percent_total, double & gpu_percent_
         {
             break;
         }
+
+        nvsmi_alive_time = Goofer::goofer_monotonic_time();
 
         std::vector<std::string> titles;
         Goofer::goofer_split_piece(line, " \t", true, true, titles);
@@ -555,6 +605,8 @@ static bool get_nvidia_gpu_enc(double & gpu_percent_total, double & gpu_percent_
             break;
         }
 
+        nvsmi_alive_time = Goofer::goofer_monotonic_time();
+
         std::vector<std::string> units;
         Goofer::goofer_split_piece(line, " \t", true, true, units);
 
@@ -572,15 +624,18 @@ static bool get_nvidia_gpu_enc(double & gpu_percent_total, double & gpu_percent_
                 gpu_percent_total += 100.0;
                 gpu_percent_using += std::stoi(values[index], nullptr);
             }
+            nvsmi_alive_time = Goofer::goofer_monotonic_time();
         }
     } while (false);
 
     goofer_pclose(file);
 
+    nvsmi_alive_time = 0;
+
     return (true);
 }
 
-static bool get_process_gpu_utilization_percentage(PDH_HCOUNTER counter_handle, std::vector<char> & buffer, SystemSnapshot & system_snapshot)
+static bool get_process_gpu_utilization_percentage(PDH_HCOUNTER counter_handle, std::vector<char> & buffer, SystemSnapshot & system_snapshot, uint64_t & nvsmi_alive_time)
 {
     if (0 == system_snapshot.system_resource.gpu_count)
     {
@@ -589,6 +644,7 @@ static bool get_process_gpu_utilization_percentage(PDH_HCOUNTER counter_handle, 
 
     if (nullptr == counter_handle)
     {
+#if 0
         static uint64_t s_last_check_time = 0;
 
         uint64_t current_time = Goofer::goofer_time();
@@ -601,7 +657,7 @@ static bool get_process_gpu_utilization_percentage(PDH_HCOUNTER counter_handle, 
 
         double gpu_percent_total = 0.0;
         double gpu_percent_using = 0.0;
-        if (!get_nvidia_gpu_enc(gpu_percent_total, gpu_percent_using))
+        if (!get_nvidia_gpu_enc(gpu_percent_total, gpu_percent_using, nvsmi_alive_time))
         {
             return (false);
         }
@@ -615,7 +671,7 @@ static bool get_process_gpu_utilization_percentage(PDH_HCOUNTER counter_handle, 
         {
             system_resource.gpu_enc_usage = 100.0 * gpu_percent_using / gpu_percent_total;
         }
-
+#endif
         return (true);
     }
 
@@ -733,7 +789,7 @@ static bool get_process_gpu_utilization_percentage(PDH_HCOUNTER counter_handle, 
     return (true);
 }
 
-static bool get_nvidia_gpu_mem(uint64_t & video_memory_size_total, uint64_t & video_memory_size_avail)
+static bool get_nvidia_gpu_mem(uint64_t & video_memory_size_total, uint64_t & video_memory_size_avail, uint64_t & nvsmi_alive_time)
 {
     video_memory_size_total = 0;
     video_memory_size_avail = 0;
@@ -752,6 +808,8 @@ static bool get_nvidia_gpu_mem(uint64_t & video_memory_size_total, uint64_t & vi
         return (false);
     }
 
+    nvsmi_alive_time = Goofer::goofer_monotonic_time();
+
     uint64_t memory_size_total = 0;
     uint64_t memory_size_avail = 0;
     char memory_size_total_unit[16] = { 0x0 };
@@ -769,14 +827,17 @@ static bool get_nvidia_gpu_mem(uint64_t & video_memory_size_total, uint64_t & vi
         }
         video_memory_size_total += memory_size_total * 1024 * 1024;
         video_memory_size_avail += memory_size_avail * 1024 * 1024;
+        nvsmi_alive_time = Goofer::goofer_monotonic_time();
     }
 
     goofer_pclose(file);
 
+    nvsmi_alive_time = 0;
+
     return (true);
 }
 
-static bool get_process_gpu_dedicated_memory_usage(PDH_HCOUNTER counter_handle, std::vector<char> & buffer, SystemSnapshot & system_snapshot)
+static bool get_process_gpu_dedicated_memory_usage(PDH_HCOUNTER counter_handle, std::vector<char> & buffer, SystemSnapshot & system_snapshot, uint64_t & nvsmi_alive_time)
 {
     if (0 == system_snapshot.system_resource.gpu_count)
     {
@@ -785,6 +846,7 @@ static bool get_process_gpu_dedicated_memory_usage(PDH_HCOUNTER counter_handle, 
 
     if (nullptr == counter_handle)
     {
+#if 0
         static uint64_t s_last_check_time = 0;
 
         uint64_t current_time = Goofer::goofer_time();
@@ -797,7 +859,7 @@ static bool get_process_gpu_dedicated_memory_usage(PDH_HCOUNTER counter_handle, 
 
         uint64_t video_memory_size_total = 0;
         uint64_t video_memory_size_avail = 0;
-        if (!get_nvidia_gpu_mem(video_memory_size_total, video_memory_size_avail))
+        if (!get_nvidia_gpu_mem(video_memory_size_total, video_memory_size_avail, nvsmi_alive_time))
         {
             return (false);
         }
@@ -805,7 +867,7 @@ static bool get_process_gpu_dedicated_memory_usage(PDH_HCOUNTER counter_handle, 
         SystemResource & system_resource = system_snapshot.system_resource;
         system_resource.gpu_mem_total = video_memory_size_total;
         system_resource.gpu_mem_usage = video_memory_size_total - video_memory_size_avail;
-
+#endif
         return (true);
     }
 
@@ -863,7 +925,7 @@ static bool get_process_gpu_dedicated_memory_usage(PDH_HCOUNTER counter_handle, 
     return (true);
 }
 
-static bool get_nvidia_card_names(uint64_t & graphics_card_count, std::list<std::string> & graphics_card_names)
+static bool get_nvidia_card_names(uint64_t & graphics_card_count, std::list<std::string> & graphics_card_names, uint64_t & nvsmi_alive_time)
 {
     graphics_card_count = 0;
     graphics_card_names.clear();
@@ -873,6 +935,8 @@ static bool get_nvidia_card_names(uint64_t & graphics_card_count, std::list<std:
     {
         return (false);
     }
+
+    nvsmi_alive_time = Goofer::goofer_monotonic_time();
 
     char buffer[128] = { 0x0 };
     while (nullptr != fgets(buffer, sizeof(buffer) - 1, file))
@@ -884,68 +948,36 @@ static bool get_nvidia_card_names(uint64_t & graphics_card_count, std::list<std:
             graphics_card_count += 1;
             graphics_card_names.push_back(graphics_card_name);
         }
+        nvsmi_alive_time = Goofer::goofer_monotonic_time();
     }
 
     goofer_pclose(file);
 
+    nvsmi_alive_time = 0;
+
     return (0 != graphics_card_count);
 }
 
-static bool get_system_gpu_dedicated_memory_total(SystemSnapshot & system_snapshot, bool & query_with_pdh)
+static bool get_system_gpu_dedicated_memory_total(SystemSnapshot & system_snapshot, bool & query_gpu_with_pdh, uint64_t & nvsmi_alive_time)
 {
     std::list<std::string> & graphics_card_names = system_snapshot.graphics_card_names;
-    graphics_card_names.clear();
-
     SystemResource & system_resource = system_snapshot.system_resource;
+
+    graphics_card_names.clear();
     system_resource.gpu_count = 0;
     system_resource.gpu_mem_total = 0;
+    system_resource.gpu_mem_usage = 0;
 
     do
     {
-        ATL::CComPtr<IDXGIFactory1> dxgi_factory;
-        if (S_OK == CreateDXGIFactory1(IsWindowsVistaSP2OrGreater() ? __uuidof(IDXGIFactory2) : __uuidof(IDXGIFactory1), reinterpret_cast<void **>(&dxgi_factory)))
-        {
-            UINT adapter_index = 0;
-            while (true)
-            {
-                ATL::CComPtr<IDXGIAdapter1> dxgi_adapter;
-                if (DXGI_ERROR_NOT_FOUND == dxgi_factory->EnumAdapters1(adapter_index++, &dxgi_adapter))
-                {
-                    break;
-                }
-
-                DXGI_ADAPTER_DESC adapter_desc = { 0x0 };
-                HRESULT result = dxgi_adapter->GetDesc(&adapter_desc);
-                if (result < 0)
-                {
-                    continue;
-                }
-
-                if (0x1414 == adapter_desc.VendorId)
-                {
-                    continue;
-                }
-
-                graphics_card_names.emplace_back(Goofer::unicode_to_utf8(adapter_desc.Description));
-                system_resource.gpu_count += 1;
-                system_resource.gpu_mem_total += static_cast<uint64_t>(adapter_desc.DedicatedVideoMemory);
-            }
-
-            if (system_resource.gpu_count > 0)
-            {
-                query_with_pdh = true;
-                return (true);
-            }
-        }
-
-        if (!get_nvidia_card_names(system_resource.gpu_count, graphics_card_names))
+        if (!get_nvidia_card_names(system_resource.gpu_count, graphics_card_names, nvsmi_alive_time))
         {
             break;
         }
 
         uint64_t video_memory_size_total = 0;
         uint64_t video_memory_size_avail = 0;
-        if (!get_nvidia_gpu_mem(video_memory_size_total, video_memory_size_avail))
+        if (!get_nvidia_gpu_mem(video_memory_size_total, video_memory_size_avail, nvsmi_alive_time))
         {
             break;
         }
@@ -954,20 +986,308 @@ static bool get_system_gpu_dedicated_memory_total(SystemSnapshot & system_snapsh
         system_resource.gpu_mem_total = video_memory_size_total;
         system_resource.gpu_mem_usage = video_memory_size_total - video_memory_size_avail;
 
+        query_gpu_with_pdh = false;
+
         return (true);
     } while (false);
 
-    return (false);
+    graphics_card_names.clear();
+    system_resource.gpu_count = 0;
+    system_resource.gpu_mem_total = 0;
+    system_resource.gpu_mem_usage = 0;
+
+    ATL::CComPtr<IDXGIFactory1> dxgi_factory;
+    if (S_OK == CreateDXGIFactory1(IsWindowsVistaSP2OrGreater() ? __uuidof(IDXGIFactory2) : __uuidof(IDXGIFactory1), reinterpret_cast<void **>(&dxgi_factory)))
+    {
+        UINT adapter_index = 0;
+        while (true)
+        {
+            ATL::CComPtr<IDXGIAdapter1> dxgi_adapter;
+            if (DXGI_ERROR_NOT_FOUND == dxgi_factory->EnumAdapters1(adapter_index++, &dxgi_adapter))
+            {
+                break;
+            }
+
+            DXGI_ADAPTER_DESC adapter_desc = { 0x0 };
+            HRESULT result = dxgi_adapter->GetDesc(&adapter_desc);
+            if (result < 0)
+            {
+                continue;
+            }
+
+            if (0x1414 == adapter_desc.VendorId)
+            {
+                continue;
+            }
+
+            graphics_card_names.emplace_back(Goofer::unicode_to_utf8(adapter_desc.Description));
+            system_resource.gpu_count += 1;
+            system_resource.gpu_mem_total += static_cast<uint64_t>(adapter_desc.DedicatedVideoMemory);
+
+            break;
+        }
+    }
+
+    query_gpu_with_pdh = true;
+
+    return (system_resource.gpu_count > 0);
+}
+
+static bool get_nvidia_gpu_temperature(uint64_t & gpu_temperature, uint64_t & nvsmi_alive_time)
+{
+    static bool s_check_tool_not_exist = false;
+
+    if (s_check_tool_not_exist)
+    {
+        return (false);
+    }
+
+    FILE * file = goofer_popen("nvidia-smi --format=csv,noheader,nounits --query-gpu=temperature.gpu", "r");
+    if (nullptr == file)
+    {
+        s_check_tool_not_exist = true;
+        return (false);
+    }
+
+    nvsmi_alive_time = Goofer::goofer_monotonic_time();
+
+    fscanf(file, "%I64u", &gpu_temperature);
+
+    goofer_pclose(file);
+
+    nvsmi_alive_time = 0;
+
+    return (true);
+}
+
+static bool get_system_gpu_temperature(SystemSnapshot & system_snapshot, uint64_t & nvsmi_alive_time)
+{
+    SystemResource & system_resource = system_snapshot.system_resource;
+
+    if (get_nvidia_gpu_temperature(system_resource.gpu_temperature, nvsmi_alive_time))
+    {
+        return (true);
+    }
+    else
+    {
+        system_resource.gpu_temperature = 0;
+        return (false);
+    }
+}
+
+static bool get_nvidia_gpu_detail(SystemResource & system_resource, uint64_t & nvsmi_alive_time, volatile bool & running)
+{
+    static bool s_check_tool_not_exist = false;
+
+    if (s_check_tool_not_exist)
+    {
+        return (false);
+    }
+
+    FILE * file = goofer_popen("nvidia-smi dmon -s u", "r");
+    if (nullptr == file)
+    {
+        s_check_tool_not_exist = true;
+        return (false);
+    }
+
+    uint32_t id_index = ~0;
+    uint32_t sm_index = ~0;
+    uint32_t mem_index = ~0;
+    uint32_t enc_index = ~0;
+    uint32_t dec_index = ~0;
+
+    char line[128] = { 0x0 };
+
+    do
+    {
+        nvsmi_alive_time = Goofer::goofer_monotonic_time();
+
+        if (nullptr == fgets(line, sizeof(line) - 1, file))
+        {
+            break;
+        }
+
+        nvsmi_alive_time = Goofer::goofer_monotonic_time();
+
+        std::string headers(line);
+        Goofer::goofer_string_trim(headers, " #");
+
+        std::vector<std::string> titles;
+        Goofer::goofer_split_piece(headers, " \t", true, true, titles);
+        for (uint32_t index = 0; index < titles.size(); ++index)
+        {
+            const std::string & item = titles[index];
+            if (0 == stricmp("gpu", item.c_str()))
+            {
+                id_index = index;
+            }
+            else if (0 == stricmp("sm", item.c_str()))
+            {
+                sm_index = index;
+            }
+            else if (0 == stricmp("mem", item.c_str()))
+            {
+                mem_index = index;
+            }
+            else if (0 == stricmp("enc", item.c_str()))
+            {
+                enc_index = index;
+            }
+            else if (0 == stricmp("dec", item.c_str()))
+            {
+                dec_index = index;
+            }
+        }
+    } while (false);
+
+    uint32_t sm_percent = 0;
+    uint32_t mem_percent = 0;
+    uint32_t enc_percent = 0;
+    uint32_t dec_percent = 0;
+    uint32_t gpu_count = 0;
+
+    while (running && nullptr != fgets(line, sizeof(line) - 1, file))
+    {
+        if (nullptr != strchr(line, '#'))
+        {
+            continue;
+        }
+        std::vector<std::string> values;
+        Goofer::goofer_split_piece(line, " \t", true, true, values);
+        if (values.size() <= id_index)
+        {
+            continue;
+        }
+        if (0 == std::stoi(values[id_index], nullptr))
+        {
+            if (0 != gpu_count)
+            {
+                system_resource.gpu_3d_usage = sm_percent / gpu_count;
+                system_resource.gpu_mem_usage = (mem_percent / gpu_count) * system_resource.gpu_mem_total / 100;
+                system_resource.gpu_enc_usage = enc_percent / gpu_count;
+                system_resource.gpu_dec_usage = dec_percent / gpu_count;
+            }
+            sm_percent = 0;
+            mem_percent = 0;
+            enc_percent = 0;
+            dec_percent = 0;
+            gpu_count = 0;
+        }
+        if (values.size() > sm_index)
+        {
+            sm_percent += std::stoi(values[sm_index], nullptr);
+        }
+        if (values.size() > mem_index)
+        {
+            mem_percent += std::stoi(values[mem_index], nullptr);
+        }
+        if (values.size() > enc_index)
+        {
+            enc_percent += std::stoi(values[enc_index], nullptr);
+        }
+        if (values.size() > dec_index)
+        {
+            dec_percent += std::stoi(values[dec_index], nullptr);
+        }
+        gpu_count += 1;
+        nvsmi_alive_time = Goofer::goofer_monotonic_time();
+    }
+
+    goofer_pclose(file);
+
+    nvsmi_alive_time = 0;
+
+    return (true);
+}
+
+static bool get_system_disk_usage(SystemSnapshot & system_snapshot)
+{
+    SystemResource & system_resource = system_snapshot.system_resource;
+    uint64_t total_size = 0;
+    uint64_t avail_size = 0;
+    if (Goofer::get_system_disk_usage("C:", total_size, avail_size))
+    {
+        system_resource.disk_total = total_size;
+        system_resource.disk_usage = total_size - avail_size;
+        return (true);
+    }
+    else
+    {
+        system_resource.disk_total = 0;
+        system_resource.disk_usage = 0;
+        return (false);
+    }
+}
+
+static bool get_network_interface_send_bytes_per_second(PDH_HCOUNTER counter_handle, std::vector<char> & buffer, SystemSnapshot & system_snapshot)
+{
+    if (nullptr == counter_handle)
+    {
+        return (false);
+    }
+
+    PDH_FMT_COUNTERVALUE_ITEM * item_array = nullptr;
+    ULONG item_count = 0;
+    if (!get_formatted_counter_array(counter_handle, PDH_FMT_DOUBLE, buffer, item_array, item_count))
+    {
+        return (false);
+    }
+
+    double total_send_bytes = 0.0;
+    for (ULONG item_index = 0; item_index < item_count; ++item_index)
+    {
+        PDH_FMT_COUNTERVALUE_ITEM & item = item_array[item_index];
+        total_send_bytes += item.FmtValue.doubleValue;
+    }
+
+    SystemResource & system_resource = system_snapshot.system_resource;
+    system_resource.net_send_bytes = static_cast<uint64_t>(total_send_bytes);
+
+    return (true);
+}
+
+static bool get_network_interface_recv_bytes_per_second(PDH_HCOUNTER counter_handle, std::vector<char> & buffer, SystemSnapshot & system_snapshot)
+{
+    if (nullptr == counter_handle)
+    {
+        return (false);
+    }
+
+    PDH_FMT_COUNTERVALUE_ITEM * item_array = nullptr;
+    ULONG item_count = 0;
+    if (!get_formatted_counter_array(counter_handle, PDH_FMT_DOUBLE, buffer, item_array, item_count))
+    {
+        return (false);
+    }
+
+    double total_recv_bytes = 0.0;
+    for (ULONG item_index = 0; item_index < item_count; ++item_index)
+    {
+        PDH_FMT_COUNTERVALUE_ITEM & item = item_array[item_index];
+        total_recv_bytes += item.FmtValue.doubleValue;
+    }
+
+    SystemResource & system_resource = system_snapshot.system_resource;
+    system_resource.net_recv_bytes = static_cast<uint64_t>(total_recv_bytes);
+
+    return (true);
 }
 
 ResourceMonitorImpl::ResourceMonitorImpl()
     : m_running(false)
+    , m_query_gpu_with_pdh(false)
+    , m_nvsmi_alive_time(0)
+    , m_stuck_check_thread()
+    , m_nvgpu_check_thread()
     , m_query_thread()
     , m_query_event(nullptr)
     , m_query_handle(nullptr)
     , m_processor_counter(nullptr)
     , m_gpu_engine_counter(nullptr)
     , m_gpu_memory_counter(nullptr)
+    , m_net_send_counter(nullptr)
+    , m_net_recv_counter(nullptr)
     , m_system_snapshot()
     , m_system_snapshot_mutex()
 {
@@ -989,6 +1309,15 @@ bool ResourceMonitorImpl::init()
 
         m_running = true;
 
+        m_query_gpu_with_pdh = false;
+
+        m_stuck_check_thread = std::thread(&::ResourceMonitorImpl::stuck_check_thread, this);
+        if (!m_stuck_check_thread.joinable())
+        {
+            RUN_LOG_ERR("resource monitor init failure while stuck check thread create failed");
+            break;
+        }
+
         if (!get_system_cpu_count(m_system_snapshot))
         {
             RUN_LOG_ERR("resource monitor init failure while get system cpu count failed");
@@ -1001,8 +1330,13 @@ bool ResourceMonitorImpl::init()
             break;
         }
 
-        bool query_with_pdh = false;
-        if (!get_system_gpu_dedicated_memory_total(m_system_snapshot, query_with_pdh))
+        if (!get_system_disk_usage(m_system_snapshot))
+        {
+            RUN_LOG_ERR("resource monitor init failure while get system disk usage failed");
+            break;
+        }
+
+        if (!get_system_gpu_dedicated_memory_total(m_system_snapshot, m_query_gpu_with_pdh, m_nvsmi_alive_time))
         {
             RUN_LOG_WAR("resource monitor init warning while get system gpu dedicated memory total failed");
         }
@@ -1025,7 +1359,7 @@ bool ResourceMonitorImpl::init()
             RUN_LOG_WAR("resource monitor init warning while add processor time counter failed");
         }
 
-        if (query_with_pdh && m_system_snapshot.system_resource.gpu_count > 0)
+        if (m_query_gpu_with_pdh && m_system_snapshot.system_resource.gpu_count > 0)
         {
             if (ERROR_SUCCESS != PdhAddCounter(m_query_handle, "\\GPU Engine(*)\\Utilization Percentage", 0, &m_gpu_engine_counter))
             {
@@ -1038,10 +1372,37 @@ bool ResourceMonitorImpl::init()
             }
         }
 
+        if (ERROR_SUCCESS != PdhAddCounter(m_query_handle, "\\Network Interface(*)\\Bytes Sent/sec", 0, &m_net_send_counter))
+        {
+            RUN_LOG_WAR("resource monitor init warning while add network interface bytes send per second counter failed");
+        }
+
+        if (ERROR_SUCCESS != PdhAddCounter(m_query_handle, "\\Network Interface(*)\\Bytes Received/sec", 0, &m_net_recv_counter))
+        {
+            RUN_LOG_WAR("resource monitor init warning while add network interface bytes recv per second counter failed");
+        }
+
         if (ERROR_SUCCESS != PdhCollectQueryDataEx(m_query_handle, 5, m_query_event))
         {
             RUN_LOG_ERR("resource monitor init failure while collect query data start failed");
             break;
+        }
+
+        if (m_query_gpu_with_pdh)
+        {
+            if (m_stuck_check_thread.joinable())
+            {
+                m_stuck_check_thread.join();
+            }
+        }
+        else
+        {
+            m_nvgpu_check_thread = std::thread(&ResourceMonitorImpl::nvgpu_check_thread, this);
+            if (!m_nvgpu_check_thread.joinable())
+            {
+                RUN_LOG_ERR("resource monitor init failure while nvgpu check thread create failed");
+                break;
+            }
         }
 
         m_query_thread = std::thread(&ResourceMonitorImpl::query_resource_thread, this);
@@ -1069,6 +1430,21 @@ void ResourceMonitorImpl::exit()
 
         m_running = false;
 
+        if (m_stuck_check_thread.joinable())
+        {
+            RUN_LOG_DBG("resource monitor exit while stuck check thread exit begin");
+            m_stuck_check_thread.join();
+            RUN_LOG_DBG("resource monitor exit while stuck check thread exit end");
+        }
+
+        if (m_nvgpu_check_thread.joinable())
+        {
+            kill_nvsmi_process();
+            RUN_LOG_DBG("resource monitor exit while nvgpu check thread exit begin");
+            m_nvgpu_check_thread.join();
+            RUN_LOG_DBG("resource monitor exit while nvgpu check thread exit end");
+        }
+
         if (m_query_thread.joinable())
         {
             SetEvent(m_query_event);
@@ -1095,6 +1471,18 @@ void ResourceMonitorImpl::exit()
             m_gpu_memory_counter = nullptr;
         }
 
+        if (nullptr != m_net_send_counter)
+        {
+            PdhRemoveCounter(m_net_send_counter);
+            m_net_send_counter = nullptr;
+        }
+
+        if (nullptr != m_net_recv_counter)
+        {
+            PdhRemoveCounter(m_net_recv_counter);
+            m_net_recv_counter = nullptr;
+        }
+
         if (nullptr != m_query_handle)
         {
             PdhCloseQuery(m_query_handle);
@@ -1108,6 +1496,33 @@ void ResourceMonitorImpl::exit()
         }
 
         RUN_LOG_DBG("resource monitor exit end");
+    }
+}
+
+void ResourceMonitorImpl::stuck_check_thread()
+{
+    while (m_running && !m_query_gpu_with_pdh)
+    {
+        uint64_t nvsmi_alive_time = m_nvsmi_alive_time;
+        if (0 == nvsmi_alive_time || nvsmi_alive_time + 3 > Goofer::goofer_monotonic_time())
+        {
+            Goofer::goofer_ms_sleep(50);
+            continue;
+        }
+        kill_nvsmi_process();
+    }
+}
+
+void ResourceMonitorImpl::nvgpu_check_thread()
+{
+    SystemResource & system_resource = m_system_snapshot.system_resource;
+
+    while (m_running)
+    {
+        if (!get_nvidia_gpu_detail(system_resource, m_nvsmi_alive_time, m_running))
+        {
+            Goofer::goofer_ms_sleep(1000);
+        }
     }
 }
 
@@ -1133,9 +1548,13 @@ void ResourceMonitorImpl::query_resource_thread()
         get_process_cpu_usage(m_system_snapshot);
         get_process_memory_usage(m_system_snapshot);
         get_system_memory_usage(m_system_snapshot);
+        get_system_disk_usage(m_system_snapshot);
+    //  get_system_gpu_temperature(m_system_snapshot, m_nvsmi_alive_time);
         get_processor_utilization_percentage(m_processor_counter, buffer, m_system_snapshot);
-        get_process_gpu_utilization_percentage(m_gpu_engine_counter, buffer, m_system_snapshot);
-        get_process_gpu_dedicated_memory_usage(m_gpu_memory_counter, buffer, m_system_snapshot);
+        get_process_gpu_utilization_percentage(m_gpu_engine_counter, buffer, m_system_snapshot, m_nvsmi_alive_time);
+        get_process_gpu_dedicated_memory_usage(m_gpu_memory_counter, buffer, m_system_snapshot, m_nvsmi_alive_time);
+        get_network_interface_send_bytes_per_second(m_net_send_counter, buffer, m_system_snapshot);
+        get_network_interface_recv_bytes_per_second(m_net_recv_counter, buffer, m_system_snapshot);
     }
 }
 
